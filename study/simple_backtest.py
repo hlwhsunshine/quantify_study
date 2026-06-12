@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-ETF 月度动量轮动：简化回测
+ETF 月度动量轮动：简化回测 + 仓位控制版本
 
 输入：
 1. data/etf_close.csv
@@ -19,8 +19,9 @@ ETF 月度动量轮动：简化回测
 1. 每月最后一个交易日收盘后产生信号
 2. 从下一个交易日开始持有 selected_etf
 3. 如果 selected_etf 是 cash，则空仓，收益为 0
-4. 暂不考虑手续费、滑点、税费
-5. 暂不考虑买入卖出成交失败
+4. 加入仓位控制，例如只用 50% 仓位参与策略
+5. 暂不考虑手续费、滑点、税费
+6. 暂不考虑买入卖出成交失败
 """
 
 import os
@@ -38,6 +39,12 @@ SIGNAL_FILE = os.path.join(DATA_DIR, "monthly_signal.csv")
 OUTPUT_FILE = os.path.join(DATA_DIR, "backtest_daily.csv")
 
 TRADING_DAYS_PER_YEAR = 252
+
+# 仓位比例
+# 1.0 表示满仓
+# 0.5 表示只用 50% 资金买入 ETF，剩余 50% 现金不动
+# 0.3 表示只用 30% 资金买入 ETF
+POSITION_RATIO = 1
 
 
 # =========================
@@ -168,21 +175,22 @@ def calc_strategy_returns(return_df, position_df):
         strategy_return = 0
 
     如果 position = hs300：
-        strategy_return = 当天 hs300 的日收益
+        strategy_return = hs300 当天收益 * 仓位比例
 
-    其他 ETF 同理。
+    加入仓位控制后：
+        例如 POSITION_RATIO = 0.5
+        ETF 当天上涨 2%，账户只上涨 1%
+        ETF 当天下跌 2%，账户只下跌 1%
     """
 
     result_df = position_df.copy()
-
-    result_df["strategy_return"] = 0.0
 
     etf_columns = [
         col for col in return_df.columns
         if col != "date"
     ]
 
-    # 合并收益率数据
+    # 合并每只 ETF 的每日收益率
     merged_df = pd.merge(
         result_df,
         return_df,
@@ -191,12 +199,15 @@ def calc_strategy_returns(return_df, position_df):
     )
 
     strategy_returns = []
+    actual_positions = []
 
     for _, row in merged_df.iterrows():
         position = row["position"]
 
+        # 空仓时，收益为 0，实际仓位也是 0
         if position == "cash":
             strategy_returns.append(0.0)
+            actual_positions.append(0.0)
             continue
 
         if position not in etf_columns:
@@ -207,9 +218,13 @@ def calc_strategy_returns(return_df, position_df):
         # 如果该 ETF 当天收益为空，保守处理为空仓
         if pd.isna(etf_return):
             strategy_returns.append(0.0)
+            actual_positions.append(0.0)
         else:
-            strategy_returns.append(etf_return)
+            # 核心修改：ETF 收益 * 仓位比例
+            strategy_returns.append(etf_return * POSITION_RATIO)
+            actual_positions.append(POSITION_RATIO)
 
+    result_df["actual_position_ratio"] = actual_positions
     result_df["strategy_return"] = strategy_returns
 
     return result_df
@@ -311,6 +326,9 @@ def main():
     print("ETF 月度动量轮动：简化回测完成")
     print("=" * 60)
 
+    print("\n回测参数：")
+    print(f"仓位比例：{POSITION_RATIO:.0%}")
+
     print("\n回测区间：")
     print(f"{performance['start_date']} 到 {performance['end_date']}")
 
@@ -330,6 +348,9 @@ def main():
 
     print("\n各持仓天数：")
     print(backtest_df["position"].value_counts())
+
+    print("\n实际仓位天数：")
+    print(backtest_df["actual_position_ratio"].value_counts())
 
     # 8. 保存每日回测结果
     backtest_df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
